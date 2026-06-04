@@ -1,7 +1,8 @@
 # Halsbury's / Lexis+ HK scraper — Python dependencies.
-# Install with ./setup.sh (preferred) or:
-#   python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
-#   .venv/bin/python -m playwright install chromium   # one-time browser download
+# Install with ./setup.sh  (Windows: .\setup.ps1)  — preferred — or manually:
+#   macOS/Linux:  python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
+#   Windows:      py      -m venv .venv ;  .venv\Scripts\python -m pip install -r requirements.txt
+#   then (either OS, using that venv's python):  python -m playwright install chromium  # one-time browser download
 
 # Transport / SPA rendering (a real browser carries the EZproxy session)
 playwright==1.60.0
