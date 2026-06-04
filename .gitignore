@@ -1,0 +1,33 @@
+# --- Virtual environment (recreate with ./setup.sh) ---
+.venv/
+venv/
+env/
+
+# --- Operational state: persistent browser profile (your login session &
+#     cookies!), SQLite manifest, failure logs. Never commit — see README. ---
+.state/
+
+# --- Extracted corpus: copyrighted, personal study only, not for
+#     redistribution. Keep it off the repo (but keep the empty dir). ---
+output/*
+!output/.gitkeep
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- OS / editor junk ---
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# --- Claude Code local (machine-specific) settings ---
+.claude/settings.local.json

@@ -1,0 +1,15 @@
+# seeds.txt — one Halsbury's title per line, for
+#   python -m lex.cli extract --seeds seeds.txt
+#
+# Format (| separated):
+#     Title | <title TOC/landing URL> | Volume (optional)
+# or just:
+#     <title TOC/landing URL>
+#
+# Blank lines and lines starting with '#' are ignored.
+#
+# To get a seed URL: open the title in Lexis+ HK (via HKU EZproxy), land on its
+# table of contents / first document, and copy the address-bar URL here.
+#
+# Example (replace with a real, current URL from your session):
+# Agency | https://plus-lexis-com.eproxy.lib.hku.hk/apac/document/?pdmfid=1539266&pddocfullpath=%2Fshared%2Fdocument%2Fanalytical-materials-uk%2Furn:contentItem:8T8B-3B32-D6MY-P1D2-00000-00&pdtocnodeidentifier=AABAACAABAAB | Volume 1 (2022)

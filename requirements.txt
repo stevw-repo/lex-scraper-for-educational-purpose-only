@@ -1,0 +1,18 @@
+# Halsbury's / Lexis+ HK scraper — Python dependencies.
+# Install with ./setup.sh (preferred) or:
+#   python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
+#   .venv/bin/python -m playwright install chromium   # one-time browser download
+
+# Transport / SPA rendering (a real browser carries the EZproxy session)
+playwright==1.60.0
+
+# HTML parsing & Markdown conversion (parser tuned against these versions)
+beautifulsoup4==4.14.3
+lxml==6.0.2
+markdownify==1.2.2
+
+# Optional HTTP fast-path (disabled by default; see config.USE_HTTP_FASTPATH)
+# curl_cffi>=0.7.0
+
+# --- dev / tests (optional; the offline tests also run with plain `python`) ---
+pytest>=8.0
