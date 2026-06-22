@@ -16,7 +16,8 @@ from .models import Section
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sections (
-    urn        TEXT PRIMARY KEY,
+    section_key TEXT PRIMARY KEY,
+    urn        TEXT,
     nodeid     TEXT,
     title      TEXT,
     number     TEXT,
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS sections (
 );
 CREATE INDEX IF NOT EXISTS ix_status ON sections(status);
 CREATE INDEX IF NOT EXISTS ix_title  ON sections(title);
+CREATE INDEX IF NOT EXISTS ix_urn    ON sections(urn);
 """
 
 
@@ -40,44 +42,72 @@ class Manifest:
         self.db = sqlite3.connect(self.path)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(_SCHEMA)
-        # migrate DBs created before the `record` column existed
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(sections)")}
+        if "section_key" not in cols:
+            self._migrate_to_section_keys(cols)
+            cols = {r[1] for r in self.db.execute("PRAGMA table_info(sections)")}
+        # migrate DBs created before the `record` column existed
         if "record" not in cols:
             self.db.execute("ALTER TABLE sections ADD COLUMN record TEXT")
         self.db.commit()
+
+    def _migrate_to_section_keys(self, cols: set[str]) -> None:
+        """Move older manifests from ``urn`` primary keys to section keys."""
+        self.db.execute("ALTER TABLE sections RENAME TO sections_old")
+        self.db.execute("DROP INDEX IF EXISTS ix_status")
+        self.db.execute("DROP INDEX IF EXISTS ix_title")
+        self.db.execute("DROP INDEX IF EXISTS ix_urn")
+        self.db.executescript(_SCHEMA)
+        record_expr = "record" if "record" in cols else "NULL"
+        self.db.execute(
+            f"""INSERT OR REPLACE INTO sections
+                    (section_key, urn, nodeid, title, number, heading, source_url,
+                     status, path, record, error, updated_at)
+                SELECT urn, urn, nodeid, title, number, heading, source_url,
+                       status, path, {record_expr}, error, updated_at
+                FROM sections_old"""
+        )
+        self.db.execute("DROP TABLE sections_old")
 
     # --- recording --------------------------------------------------------
 
     def record_harvested(self, section: Section) -> None:
         """Insert a harvested section as pending (no-op if already present)."""
+        if section.key != section.urn:
+            self.db.execute(
+                "DELETE FROM sections WHERE section_key=? AND urn=? AND status!='done'",
+                (section.urn, section.urn),
+            )
         self.db.execute(
-            """INSERT INTO sections (urn, nodeid, title, number, heading, source_url,
-                                     status, updated_at)
-               VALUES (?,?,?,?,?,?, 'pending', ?)
-               ON CONFLICT(urn) DO UPDATE SET
+            """INSERT INTO sections (section_key, urn, nodeid, title, number,
+                                     heading, source_url, status, updated_at)
+               VALUES (?,?,?,?,?,?,?, 'pending', ?)
+               ON CONFLICT(section_key) DO UPDATE SET
                    nodeid=excluded.nodeid, title=excluded.title,
                    number=excluded.number, heading=excluded.heading,
                    source_url=excluded.source_url
                WHERE sections.status != 'done'""",
-            (section.urn, section.nodeid, section.title, section.number,
+            (section.key, section.urn, section.nodeid, section.title, section.number,
              section.heading, section.source_url, time.time()),
         )
         self.db.commit()
 
-    def mark_done(self, urn: str, record: dict | None = None) -> None:
+    def mark_done(self, section_key: str, record: dict | None = None) -> None:
         self.db.execute(
-            "UPDATE sections SET status='done', record=?, error=NULL, updated_at=? WHERE urn=?",
+            """UPDATE sections
+               SET status='done', record=?, error=NULL, updated_at=?
+               WHERE section_key=?""",
             (json.dumps(record, ensure_ascii=False) if record is not None else None,
-             time.time(), urn),
+             time.time(), section_key),
         )
         self.db.commit()
 
     def failed_urns(self) -> set[str]:
-        """URNs of sections currently marked failed (targets for a `retry` run)."""
+        """Keys of sections currently marked failed (targets for a `retry` run)."""
         rows = self.db.execute(
-            "SELECT urn FROM sections WHERE status='failed'"
+            "SELECT section_key FROM sections WHERE status='failed'"
         ).fetchall()
-        return {r["urn"] for r in rows}
+        return {r["section_key"] for r in rows}
 
     def done_records(self) -> list[dict]:
         """Every finished section's JSON record (the JSONL source of truth)."""
@@ -92,18 +122,18 @@ class Manifest:
                 pass
         return out
 
-    def mark_failed(self, urn: str, error: str) -> None:
+    def mark_failed(self, section_key: str, error: str) -> None:
         self.db.execute(
-            "UPDATE sections SET status='failed', error=?, updated_at=? WHERE urn=?",
-            (error[:1000], time.time(), urn),
+            "UPDATE sections SET status='failed', error=?, updated_at=? WHERE section_key=?",
+            (error[:1000], time.time(), section_key),
         )
         self.db.commit()
 
     # --- queries ----------------------------------------------------------
 
-    def is_done(self, urn: str) -> bool:
+    def is_done(self, section_key: str) -> bool:
         row = self.db.execute(
-            "SELECT status FROM sections WHERE urn=?", (urn,)
+            "SELECT status FROM sections WHERE section_key=?", (section_key,)
         ).fetchone()
         return bool(row) and row["status"] == "done"
 

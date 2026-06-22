@@ -37,12 +37,18 @@ SECTIONS = [
 
 
 def sample_for(number: str) -> str:
-    p = next(p for p in SAMPLES.glob("*.html") if p.name.startswith(f"{number}."))
+    p = next((p for p in SAMPLES.glob("*.html") if p.name.startswith(f"{number}.")), None)
+    if p is None:
+        raise FileNotFoundError(f"sample page for section {number} not found in {SAMPLES}")
     return p.read_text(encoding="utf-8", errors="replace")
 
 
 if OUT.exists():
     shutil.rmtree(OUT)
+
+if not any(SAMPLES.glob("*.html")):
+    print(f"skip writer check: no sample pages in {SAMPLES}")
+    raise SystemExit(0)
 
 parser = SectionParser()
 writer = Output(root=OUT)

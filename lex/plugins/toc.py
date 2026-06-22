@@ -24,9 +24,13 @@ from ..core.models import Section
 from .base import Plugin
 
 _NUM_HEAD_RE = re.compile(r"^\s*(\d+[A-Za-z]?)\.\s*(.+?)\s*$")
+_BRACKET_NUM_HEAD_RE = re.compile(r"^\s*\[?(\d+(?:\.\d+)+[A-Za-z]?)\]?\.\s*(.+?)\s*$")
 
 
 def split_number_heading(label: str) -> tuple[str, str]:
+    m = _BRACKET_NUM_HEAD_RE.match(label or "")
+    if m:
+        return (m.group(1), m.group(2))
     m = _NUM_HEAD_RE.match(label or "")
     return (m.group(1), m.group(2)) if m else ("", (label or "").strip())
 
@@ -41,10 +45,18 @@ def build_sections(nodes: list[dict], title: str, volume: str | None = None,
     """
     label_by_id = {n["nodeid"]: (n.get("label") or "").strip()
                    for n in nodes if n.get("nodeid")}
+    leaf_nodes = [
+        n for n in nodes
+        if n.get("urn") and n.get("nodeid") and not n.get("has_children")
+    ]
+    urn_counts: dict[str, int] = {}
+    for n in leaf_nodes:
+        urn_counts[n["urn"]] = urn_counts.get(n["urn"], 0) + 1
     seen: dict[str, Section] = {}
-    for n in nodes:
+    for n in leaf_nodes:
         urn, nodeid = n.get("urn"), n.get("nodeid")
-        if not urn or not nodeid or urn in seen:
+        section_key = f"{urn}#{nodeid}" if urn_counts.get(urn, 0) > 1 else urn
+        if not urn or not nodeid or section_key in seen:
             continue
         number, heading = split_number_heading(n.get("label", ""))
         # hierarchy = labels of ancestor node-id prefixes (skip the title chunk)
@@ -53,10 +65,14 @@ def build_sections(nodes: list[dict], title: str, volume: str | None = None,
             for k in range(6, len(nodeid), 3)
             if nodeid[:k] in label_by_id and label_by_id[nodeid[:k]]
         ]
-        seen[urn] = Section(
+        seen[section_key] = Section(
             urn=urn, nodeid=nodeid, title=title, number=number, heading=heading,
             hierarchy=hierarchy, volume=volume, publication=publication,
-            source_url=n.get("url") or urls.build_viewer_url(urn, nodeid),
+            source_url=n.get("url") or urls.build_viewer_url(
+                urn, nodeid, scroll_reference_id=n.get("anchor_id")
+            ),
+            anchor_id=n.get("anchor_id"),
+            section_key=section_key,
         )
     return sorted(seen.values(), key=lambda s: s.decoded_path)
 
@@ -128,6 +144,17 @@ def _first_list_under_key(model, key: str) -> list:
     return []
 
 
+def _has_descendant_counts(value) -> bool:
+    parts = [p for p in str(value or "").split("|") if p]
+    for part in parts:
+        try:
+            if int(part) > 0:
+                return True
+        except ValueError:
+            return True
+    return False
+
+
 def iter_tocnodes(model: dict) -> list[dict]:
     """Flatten the TOC tree, computing each node's full pdtocnodeidentifier by
     concatenating per-level id chunks (the ROOT sentinel contributes none)."""
@@ -143,6 +170,7 @@ def iter_tocnodes(model: dict) -> list[dict]:
             "islink": bool(p.get("islink")),
             "haschildren": bool(p.get("haschildren")),
             "href": p.get("linktemplatehrefvalue") or "",
+            "anchor_id": p.get("anchoridref") or "",
             "nodepath": p.get("nodepath"),
             "countsbylevel": p.get("countsbylevel") or "",
             "level": p.get("level"),
@@ -161,10 +189,21 @@ def _nodes_from_model(model: dict) -> list[dict]:
         if not r["nodeid"]:
             continue  # ROOT sentinel
         urn = None
+        url = None
         if r["islink"] and "/shared/document/" in r["href"]:
             m = _URN_IN_PATH.search(r["href"])
             urn = m.group(0) if m else None
-        nodes.append({"nodeid": r["nodeid"], "label": r["title"], "urn": urn, "url": None})
+            url = urls.build_viewer_url_from_doc_fullpath(
+                r["href"], r["nodeid"], scroll_reference_id=r["anchor_id"] or None
+            )
+        nodes.append({
+            "nodeid": r["nodeid"],
+            "label": r["title"],
+            "urn": urn,
+            "url": url,
+            "anchor_id": r["anchor_id"] or None,
+            "has_children": r["haschildren"] or _has_descendant_counts(r["countsbylevel"]),
+        })
     return nodes
 
 
@@ -181,14 +220,29 @@ def nodes_from_toctree(data: dict) -> list[dict]:
     def rec(node: dict) -> None:
         nid = node.get("nodeId") or ""
         dfp = node.get("docFullPath") or ""
+        children = node.get("nodes") or []
+        counts = node.get("countsByLevel") or node.get("countsbylevel") or ""
+        has_children = (
+            bool(children) or bool(node.get("hasChildren"))
+            or _has_descendant_counts(counts)
+        )
+        anchor_id = (
+            node.get("anchorIdRef") or node.get("anchoridref")
+            or node.get("anchorId") or node.get("anchorid")
+        )
         urn = None
+        url = None
         if "/shared/document/" in dfp:
             m = _URN_IN_PATH.search(dfp)
             urn = m.group(0) if m else None
+            url = urls.build_viewer_url_from_doc_fullpath(
+                dfp, nid, scroll_reference_id=anchor_id
+            )
         if nid:
             out.append({"nodeid": nid, "label": node.get("nodeTitle") or "",
-                        "urn": urn, "url": None})
-        for child in node.get("nodes") or []:
+                        "urn": urn, "url": url, "anchor_id": anchor_id,
+                        "has_children": has_children})
+        for child in children:
             rec(child)
 
     container = (data.get("tocEntity") or {}).get("tocContainer") or {}

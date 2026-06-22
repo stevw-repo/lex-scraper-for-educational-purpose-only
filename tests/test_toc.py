@@ -32,6 +32,8 @@ def test_split_number_heading():
         "1", "Nature of the relation of agency.")
     assert split_number_heading("(1) The Relation of Agency") == (
         "", "(1) The Relation of Agency")
+    assert split_number_heading("[15.001]. Nature of the relation of agency") == (
+        "15.001", "Nature of the relation of agency")
 
 
 def test_build_sections_hierarchy_order_dedupe():
@@ -60,6 +62,42 @@ def test_nodes_from_html_roundtrip():
     assert secs[0].urn == "urn:contentItem:8T8B-3B32-D6MY-P1D2-00000-00"
     assert secs[0].hierarchy == ["1. Nature and Formation", "(1) The Relation of Agency"]
     assert secs[0].number == "1"
+
+
+def test_hk_toctree_uses_leaf_anchors_and_docfullpath():
+    data = {"tocEntity": {"tocContainer": {"tocNodes": [{
+        "nodeId": "AADAAC",
+        "nodeTitle": "(1) Nature and Formation of Agency",
+        "docFullPath": "/shared/document/analytical-materials-hk/"
+                       "urn:contentItem:5PJX-XB01-JCBX-S3FT-00000-00",
+        "countsByLevel": "2",
+        "nodes": [
+            {
+                "nodeId": "AADAACAAB",
+                "nodeTitle": "[15.001]. Nature of the relation of agency",
+                "docFullPath": "/shared/document/analytical-materials-hk/"
+                               "urn:contentItem:5PJX-XB01-JCBX-S3FT-00000-00",
+                "anchorIdRef": "HLHK.15.001",
+            },
+            {
+                "nodeId": "AADAACAAC",
+                "nodeTitle": "[15.002]. Other uses of the word 'agent'",
+                "docFullPath": "/shared/document/analytical-materials-hk/"
+                               "urn:contentItem:5PJX-XB01-JCBX-S3FT-00000-00",
+                "anchorIdRef": "HLHK.15.002",
+            },
+        ],
+    }]}}}
+    from lex.plugins.toc import nodes_from_toctree  # noqa: E402
+
+    secs = build_sections(nodes_from_toctree(data), title="15 – Agency")
+    assert [s.nodeid for s in secs] == ["AADAACAAB", "AADAACAAC"]
+    assert [s.number for s in secs] == ["15.001", "15.002"]
+    assert secs[0].hierarchy == ["(1) Nature and Formation of Agency"]
+    assert secs[0].key.endswith("#AADAACAAB")
+    assert "analytical-materials-hk" in secs[0].source_url
+    assert "pdtocnodeidentifier=AADAACAAB" in secs[0].source_url
+    assert "pdscrollreferenceid=HLHK.15.001" in secs[0].source_url
 
 
 def _run():

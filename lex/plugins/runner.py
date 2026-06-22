@@ -96,13 +96,13 @@ class Runner(Plugin):
             if controls.stopped():
                 controls.event("info", msg="stopped")
                 break
-            if self.manifest.is_done(s.urn):
+            if self.manifest.is_done(s.key):
                 skipped += 1
                 continue
-            if failed_set is not None and s.urn not in failed_set:
+            if failed_set is not None and s.key not in failed_set:
                 skipped += 1
                 continue
-            label = f"{s.number}. {s.heading}"
+            label = f"{s.number}. {s.heading}" if s.number else s.heading
             try:
                 self._extract_one(s, content, parser, writer)
                 done += 1
@@ -143,12 +143,13 @@ class Runner(Plugin):
     def _extract_one(self, section, content, parser, writer) -> None:
         html = content.fetch_html(section)
         parsed = parser.parse_structured(
-            html, section_number=section.number, heading=section.heading
+            html, section_number=section.number, heading=section.heading,
+            anchor_id=getattr(section, "anchor_id", None),
         )
-        self.manifest.mark_done(section.urn, writer.to_record(section, parsed))
+        self.manifest.mark_done(section.key, writer.to_record(section, parsed))
 
     def _fail(self, section, exc) -> None:
-        self.manifest.mark_failed(section.urn, repr(exc))
+        self.manifest.mark_failed(section.key, repr(exc))
         try:
             config.FAILURES_LOG.parent.mkdir(parents=True, exist_ok=True)
             with open(config.FAILURES_LOG, "a", encoding="utf-8") as fh:

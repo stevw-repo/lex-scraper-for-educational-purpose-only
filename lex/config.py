@@ -51,6 +51,7 @@ NAV_TIMEOUT_MS = 45_000
 CONTENT_WAIT_TIMEOUT_MS = 30_000
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 3.0                            # seconds; * 2**attempt
+DOCUMENT_HTML_CACHE_SIZE = 12                       # rendered docs to reuse in one run
 
 # --- Safeguards (off by default per "moderate, no cap"; stop-on-block always on) ---
 MAX_PER_DAY: int | None = None
@@ -62,7 +63,7 @@ USE_HTTP_FASTPATH = False
 
 # --- Selectors (the real Lexis SS_ markup, verified against saved samples) ---
 SEL_CONTENT_CONTAINER = (
-    ".SS_contentdocument, .document-content-container, .section-content-container"
+    ".SS_contentdocument, .SS_HK, .document-content-container, .section-content-container"
 )
 SEL_DOC_TITLE = "ln-document-title, .documentTitle"
 SEL_HEADINGS = "h1.SS_Heading1, h2.SS_Heading2, h3.SS_Heading3"

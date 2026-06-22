@@ -26,6 +26,8 @@ class Section:
     volume: str | None = None      # e.g. "Volume 1 (2022)"
     source_url: str | None = None
     publication: str | None = None  # e.g. "Halsbury's Laws of England" (TOC root)
+    anchor_id: str | None = None    # e.g. HLHK.15.001 for sub-doc sections
+    section_key: str | None = None  # disambiguates TOC leaves sharing one URN
 
     @property
     def decoded_path(self) -> list[int]:
@@ -35,4 +37,4 @@ class Section:
     @property
     def key(self) -> str:
         """Stable dedupe key."""
-        return self.urn
+        return self.section_key or self.urn

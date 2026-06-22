@@ -12,13 +12,17 @@ from lex.core import urls  # noqa: E402
 from lex.core.manifest import Manifest  # noqa: E402
 from lex.core.models import Section  # noqa: E402
 
-PROJECT = pathlib.Path(__file__).resolve().parents[2]
-LINKS = (PROJECT / "TOC" / "links.txt").read_text(encoding="utf-8").splitlines()
+PROJECT = pathlib.Path(__file__).resolve().parents[1]
+LINKS_PATH = PROJECT / "TOC" / "links.txt"
+LINKS = (LINKS_PATH.read_text(encoding="utf-8").splitlines()
+         if LINKS_PATH.exists() else [])
 URLS = [ln.strip() for ln in LINKS if ln.strip().startswith("https")]
 
 
 def test_parse_and_roundtrip_links():
-    assert URLS, "no URLs found in links.txt"
+    if not URLS:
+        print("  skip links.txt roundtrip fixture (TOC/links.txt not present)")
+        return
     for url in URLS:
         got = urls.parse_viewer_url(url)
         assert got["urn"] and got["urn"].startswith("urn:contentItem:"), url
@@ -38,6 +42,22 @@ def test_build_matches_links_txt_shape():
     assert "pdtocnodeidentifier=AABAACAABAAB" in u
     assert "crid" not in u and "pdscrollreferenceid" not in u
     print("  ok  built URL matches links.txt shape (no UI-state params)")
+
+
+def test_build_preserves_hk_docfullpath_and_scrollref():
+    u = urls.build_viewer_url_from_doc_fullpath(
+        "/shared/document/analytical-materials-hk/"
+        "urn:contentItem:5PJX-XB01-JCBX-S3FT-00000-00",
+        "AADAACAAB",
+        scroll_reference_id="HLHK.15.001",
+    )
+    got = urls.parse_viewer_url(u)
+    assert got["urn"] == "urn:contentItem:5PJX-XB01-JCBX-S3FT-00000-00"
+    assert got["nodeid"] == "AADAACAAB"
+    assert got["doc_fullpath"].startswith("/shared/document/analytical-materials-hk/")
+    assert got["scroll_reference_id"] == "HLHK.15.001"
+    assert "analytical-materials-hk" in u
+    print("  ok  HK docFullPath + scroll ref preserved")
 
 
 def test_manifest_resume_cycle():
@@ -61,6 +81,59 @@ def test_manifest_resume_cycle():
     m.close()
     db_path.unlink()
     print("  ok  manifest harvest/resume/dedupe cycle")
+
+
+def test_manifest_allows_shared_urn_section_keys():
+    db_path = pathlib.Path(__file__).resolve().parents[1] / ".state" / "test_manifest.sqlite"
+    if db_path.exists():
+        db_path.unlink()
+    m = Manifest(db_path)
+    urn = "urn:contentItem:5PJX-XB01-JCBX-S3FT-00000-00"
+    s1 = Section(urn=urn, nodeid="AADAACAAB", title="15 – Agency", number="15.001",
+                 heading="Nature of the relation of agency.",
+                 section_key=f"{urn}#AADAACAAB")
+    s2 = Section(urn=urn, nodeid="AADAACAAC", title="15 – Agency", number="15.002",
+                 heading="Other uses of the word agent.",
+                 section_key=f"{urn}#AADAACAAC")
+    m.record_harvested(s1)
+    m.record_harvested(s2)
+    assert len(m.pending("15 – Agency")) == 2
+    m.mark_done(s1.key, {"contentitem_urn": urn, "pdtocnodeidentifier": s1.nodeid})
+    assert m.is_done(s1.key)
+    assert not m.is_done(s2.key)
+    m.close()
+    db_path.unlink()
+    print("  ok  manifest stores duplicate URNs by section key")
+
+
+def test_manifest_migrates_urn_primary_key_schema():
+    db_path = pathlib.Path(__file__).resolve().parents[1] / ".state" / "test_manifest.sqlite"
+    if db_path.exists():
+        db_path.unlink()
+    import sqlite3
+
+    db = sqlite3.connect(db_path)
+    db.executescript("""
+        CREATE TABLE sections (
+            urn TEXT PRIMARY KEY, nodeid TEXT, title TEXT, number TEXT,
+            heading TEXT, source_url TEXT, status TEXT, path TEXT,
+            record TEXT, error TEXT, updated_at REAL
+        );
+        INSERT INTO sections
+            (urn, nodeid, title, number, heading, source_url, status)
+        VALUES
+            ('urn:contentItem:OLD', 'AAB', 'Agency', '1', 'Heading', 'url', 'pending');
+    """)
+    db.close()
+
+    m = Manifest(db_path)
+    cols = {r[1] for r in m.db.execute("PRAGMA table_info(sections)")}
+    assert "section_key" in cols
+    assert len(m.pending("Agency")) == 1
+    assert m.pending("Agency")[0]["section_key"] == "urn:contentItem:OLD"
+    m.close()
+    db_path.unlink()
+    print("  ok  old manifest schema migrates to section_key")
 
 
 def _run():

@@ -23,16 +23,52 @@ def build_viewer_url(
     pdmfid: str = config.PDMFID,
     content_set: str = config.CONTENT_SET,
     base_url: str = config.BASE_URL,
+    scroll_reference_id: str | None = None,
 ) -> str:
     """Assemble the minimal viewer URL for a harvested section."""
     if not urn.startswith("urn:"):
         urn = "urn:contentItem:" + urn
     pddocfullpath = content_set + urn
+    return build_viewer_url_from_doc_fullpath(
+        pddocfullpath,
+        nodeid,
+        pdmfid=pdmfid,
+        base_url=base_url,
+        scroll_reference_id=scroll_reference_id,
+    )
+
+
+def build_viewer_url_from_doc_fullpath(
+    doc_fullpath: str,
+    nodeid: str,
+    *,
+    pdmfid: str = config.PDMFID,
+    base_url: str = config.BASE_URL,
+    scroll_reference_id: str | None = None,
+) -> str:
+    """Build a viewer URL while preserving Lexis' full document content set.
+
+    Halsbury's England uses ``analytical-materials-uk`` while Halsbury's Hong Kong
+    uses ``analytical-materials-hk``. The TOC API already tells us the exact
+    ``docFullPath``; this helper keeps that path instead of guessing from a
+    global default.
+    """
+    doc_fullpath = unquote(doc_fullpath or "")
+    if doc_fullpath.startswith("/apac/document"):
+        parsed = parse_viewer_url(doc_fullpath)
+        doc_fullpath = parsed.get("doc_fullpath") or ""
+    if not doc_fullpath.startswith("/shared/document/"):
+        raise ValueError(f"not a Lexis document path: {doc_fullpath!r}")
     query = (
         f"pdmfid={pdmfid}"
-        f"&pddocfullpath={quote(pddocfullpath, safe=':')}"  # encode '/', keep ':'
+        f"&pddocfullpath={quote(doc_fullpath, safe=':')}"  # encode '/', keep ':'
         f"&pdtocnodeidentifier={nodeid}"
     )
+    if scroll_reference_id:
+        query += (
+            f"&pdscrollreferenceid={quote(scroll_reference_id, safe=':.')}"
+            "&pdisdocsliderrequired=true"
+        )
     return f"{base_url}/apac/document/?{query}"
 
 
@@ -45,6 +81,8 @@ def parse_viewer_url(url: str) -> dict:
         "urn": m.group(1) if m else None,
         "nodeid": q.get("pdtocnodeidentifier", [None])[0],
         "pdmfid": q.get("pdmfid", [None])[0],
+        "doc_fullpath": pdfp or None,
+        "scroll_reference_id": q.get("pdscrollreferenceid", [None])[0],
     }
 
 

@@ -29,6 +29,7 @@ from ..core.exceptions import ParseError
 from .base import Plugin
 
 _FN_ID_RE = re.compile(r"fn(?:ref|def)__(\d+)_")
+_HK_FN_ID_RE = re.compile(r"\.F(\d+)(?:-|$)")
 _PLACEHOLDER_RE = re.compile(r"\{FN-(\d+)\}")
 _HSPACE = r"[^\S\n]"                      # horizontal whitespace incl. nbsp, not newline
 _HSPACE_RE = re.compile(_HSPACE + r"+")
@@ -57,6 +58,7 @@ class SectionParser(Plugin):
         *,
         section_number: str | None = None,
         heading: str | None = None,
+        anchor_id: str | None = None,
     ) -> dict:
         """Parse one section into ``{heading, body_markdown, footnotes}``.
 
@@ -68,6 +70,9 @@ class SectionParser(Plugin):
         container = self._find_container(soup)
         if container is None:
             raise ParseError("content container (.SS_contentdocument) not found")
+
+        if anchor_id:
+            container = self._isolate_anchor(container, anchor_id)
 
         if not heading:
             heading = self._extract_heading(soup, container)
@@ -92,10 +97,13 @@ class SectionParser(Plugin):
         *,
         section_number: str | None = None,
         heading: str | None = None,
+        anchor_id: str | None = None,
     ) -> str:
         """Assemble one section as a standalone Markdown document (heading + body
         + ``[^n]:`` definitions). Thin wrapper over :meth:`parse_structured`."""
-        r = self.parse_structured(html, section_number=section_number, heading=heading)
+        r = self.parse_structured(
+            html, section_number=section_number, heading=heading, anchor_id=anchor_id
+        )
         return self._assemble(
             section_number, r["heading"], r["body_markdown"], list(r["footnotes"].items())
         )
@@ -137,6 +145,7 @@ class SectionParser(Plugin):
             "ul.SS_TOCTrail",                            # breadcrumb
             "i.icon", ".la-JumpUp",                      # footnote jump-up icons
             "h1.SS_Heading1",                            # part/group/section headings
+            "h2.SS_Banner",                               # selected HK section heading
             '[style*="display:none"]', '[style*="display: none"]',
             "[hidden]", '[aria-hidden="true"]',
         ]
@@ -152,8 +161,7 @@ class SectionParser(Plugin):
             return []
         out: list[list] = []  # [num, text]
         for li in footer.find_all("li"):
-            num_el = li.select_one(config.SEL_FOOTNOTE_DEF_NUM)
-            num = num_el.get_text(strip=True) if num_el else ""
+            num = self._footnote_definition_number(li)
             body = li.select_one(config.SEL_FOOTNOTE_BODY) or li
             for a in body.select("a"):
                 a.unwrap()  # drop the link wrapper but keep its text + emphasis
@@ -177,8 +185,82 @@ class SectionParser(Plugin):
         m = _FN_ID_RE.search(a.get("id", "") or "")
         if m:
             return m.group(1)
+        m = _HK_FN_ID_RE.search(a.get("id", "") or "")
+        if m:
+            return m.group(1)
         m2 = re.search(r"\d+", a.get_text(strip=True))
         return m2.group(0) if m2 else ""
+
+    def _footnote_definition_number(self, li) -> str:
+        num_el = li.select_one(config.SEL_FOOTNOTE_DEF_NUM) or li.select_one(
+            "a.SS_FootnoteDefinition"
+        )
+        if not num_el:
+            return ""
+        return self._footnote_number(num_el) or num_el.get_text(strip=True)
+
+    # --- sub-document slicing --------------------------------------------
+
+    def _isolate_anchor(self, container, anchor_id: str):
+        """Keep one anchored HK subsection out of a larger sub-document."""
+        anchor = container.find(id=anchor_id)
+        if anchor is None:
+            return container
+
+        chunks = []
+        for node in [anchor, *list(anchor.next_siblings)]:
+            if node is not anchor and self._starts_next_anchor_section(node):
+                break
+            chunks.append(str(node))
+
+        section_soup = BeautifulSoup('<div class="SS_HK"></div>', "lxml")
+        wrapper = section_soup.select_one("div")
+        fragment = BeautifulSoup("".join(chunks), "lxml")
+        source = fragment.body if fragment.body else fragment
+        for child in list(source.contents):
+            wrapper.append(child)
+
+        refs = {
+            self._footnote_number(a)
+            for a in wrapper.select(config.SEL_FOOTNOTE_REF)
+            if self._footnote_number(a)
+        }
+        if refs:
+            if not wrapper.select_one(config.SEL_FOOTNOTE_FOOTER):
+                for footer in container.select(config.SEL_FOOTNOTE_FOOTER):
+                    if anchor_id not in str(footer):
+                        continue
+                    footer_copy = BeautifulSoup(str(footer), "lxml").select_one(
+                        config.SEL_FOOTNOTE_FOOTER
+                    )
+                    if footer_copy:
+                        wrapper.append(footer_copy)
+                    break
+            for footer in wrapper.select(config.SEL_FOOTNOTE_FOOTER):
+                for li in footer.find_all("li"):
+                    if self._footnote_definition_number(li) not in refs:
+                        li.decompose()
+                if not footer.get_text(strip=True):
+                    footer.decompose()
+
+        return wrapper
+
+    @staticmethod
+    def _starts_next_anchor_section(node) -> bool:
+        if not getattr(node, "name", None) or node.name != "a" or not node.get("id"):
+            return False
+        nxt = node.find_next_sibling()
+        while nxt is not None:
+            if not getattr(nxt, "name", None):
+                nxt = nxt.next_sibling
+                continue
+            if nxt.name == "br" or not nxt.get_text(strip=True):
+                nxt = nxt.find_next_sibling()
+                continue
+            return nxt.name in {"h1", "h2", "h3"} and (
+                "SS_Banner" in (nxt.get("class") or [])
+            )
+        return False
 
     def _normalize_emphasis(self, container) -> None:
         """Retag Lexis house-style emphasis spans so markdownify keeps them.

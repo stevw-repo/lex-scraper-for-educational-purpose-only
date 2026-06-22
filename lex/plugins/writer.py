@@ -47,6 +47,12 @@ def _short_id(urn: str) -> str:
     return re.sub(r"-00000-00$", "", core)
 
 
+def _jurisdiction(publication: str | None) -> str:
+    if "hong kong" in (publication or "").lower():
+        return "Hong Kong"
+    return config.JURISDICTION
+
+
 class Output(Plugin):
     def __init__(self, root: Path | None = None):
         self.root = root or config.OUTPUT_DIR
@@ -76,7 +82,7 @@ class Output(Plugin):
             "decoded_path": section.decoded_path,
             "source_url": section.source_url,
             "retrieved_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "jurisdiction": config.JURISDICTION,
+            "jurisdiction": _jurisdiction(section.publication),
             "word_count": len(body.split()),
             "footnote_count": len(footnotes),
         }
