@@ -28,6 +28,8 @@ class Section:
     publication: str | None = None  # e.g. "Halsbury's Laws of England" (TOC root)
     anchor_id: str | None = None    # e.g. HLHK.15.001 for sub-doc sections
     section_key: str | None = None  # disambiguates TOC leaves sharing one URN
+    body_only: bool = False         # a section whose annotations are their own leaves:
+                                    # keep its statutory text, skip the commentary block
 
     @property
     def decoded_path(self) -> list[int]:

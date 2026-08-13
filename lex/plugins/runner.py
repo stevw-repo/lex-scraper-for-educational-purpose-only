@@ -145,6 +145,7 @@ class Runner(Plugin):
         parsed = parser.parse_structured(
             html, section_number=section.number, heading=section.heading,
             anchor_id=getattr(section, "anchor_id", None),
+            exclude_commentary=getattr(section, "body_only", False),
         )
         self.manifest.mark_done(section.key, writer.to_record(section, parsed))
 

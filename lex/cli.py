@@ -66,7 +66,10 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--headless", action="store_true")
 
     sub.add_parser("status", help="Show manifest counts (done / pending / failed)")
-    sub.add_parser("build", help="Rebuild the JSONL corpus from the manifest (no network)")
+    pb = sub.add_parser("build",
+                        help="Rebuild the corpus from the manifest (no network)")
+    pb.add_argument("--format", choices=("jsonl", "md", "both"), default="jsonl",
+                    help="jsonl (default), one .md per title, or both")
     psv = sub.add_parser("serve", help="Launch the local web UI in your browser")
     psv.add_argument("--host", default="127.0.0.1")
     psv.add_argument("--port", type=int, default=8765)
@@ -82,7 +85,11 @@ def main(argv=None) -> int:
 
     if args.cmd == "build":
         from .plugins.writer import Output
-        print(Output().compile_jsonl(Manifest().done_records()))
+        writer, records = Output(), Manifest().done_records()
+        if args.format in ("jsonl", "both"):
+            print(writer.compile_jsonl(records))
+        if args.format in ("md", "both"):
+            print(writer.compile_markdown(records))
         return 0
 
     if args.cmd == "serve":

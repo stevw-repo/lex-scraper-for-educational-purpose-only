@@ -296,5 +296,17 @@ class LexisSession:
         if resp.status in (401, 403):
             raise SessionExpired(f"HTTP {resp.status} from {url}")
         if not resp.ok:
-            raise ContentNotFound(f"HTTP {resp.status} from {url}")
+            # the body usually says *why* — a 500 on one TOC node and a 504 on an
+            # oversized one need completely different handling
+            raise ContentNotFound(
+                f"HTTP {resp.status} from {url}{self._error_detail(resp)}"
+            )
         return resp.json()
+
+    @staticmethod
+    def _error_detail(resp, limit: int = 300) -> str:
+        try:
+            text = (resp.text() or "").strip().replace("\n", " ")
+        except Exception:
+            return ""
+        return f" :: {text[:limit]}" if text else ""

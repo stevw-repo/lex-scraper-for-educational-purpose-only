@@ -43,6 +43,14 @@ ROOT_TOC_FULLPATH = "/shared/tableofcontents/urn:contentItem:5M8K-C9S1-FBXB-D000
 # returns the node's whole subtree as JSON (tocEntity.tocContainer.tocNodes[]).
 TOCTREE_ENDPOINT = f"{BASE_URL}/apac/f/TocInfo/toctreeresults"
 TOC_MAX_LEVEL = 12   # fallback extractToLevel when a title's countsbylevel is unknown
+# The gateway builds a title's whole subtree synchronously and times out (504) on
+# the very largest titles (~4.7k+ nodes: Bankruptcy Cap 6, District Court Cap 336,
+# SFO Cap 571, Companies Cap 622). toc.fetch_subtree() then re-asks for just that
+# node's immediate children and fetches each child's subtree on its own — the same
+# incremental expansion the SPA does. NOTE extractToLevel is an *absolute* tree
+# level that must match the target node's own deepest descendant level; too deep
+# is an HTTP 500, so per-node ceilings come from tocDescendantInfo.
+TOC_MAX_SUBTREE_REQUESTS = 400   # per-title safety cap on the split-and-drill loop
 
 # --- Pacing (moderate, jittered, serial — per confirmed decision) ---
 REQUEST_DELAY_MIN = 2.0
@@ -73,6 +81,15 @@ SEL_FOOTNOTE_DEF_NUM = ".SS_FootnoteDefinition_Content"
 SEL_FOOTNOTE_BODY = ".SS_FootnoteBody"
 SEL_EMBEDDED_LINK = "a.SS_EmbeddedLink"
 SEL_DRAFTING_NOTE = ".SS_DraftingNote"
+# --- Annotated Ordinances of Hong Kong (AOHK) markup -------------------------
+# An ordinance section is statutory text (ul.SS_List) followed by an annotations
+# block; each annotation is its own TOC leaf, so a section record keeps only the
+# statutory text and drops the block below.
+SEL_HK_COMMENTARY_BLOCK = '[data-id="HideShow_Commentary"]'
+SEL_HK_LIST_LABEL = ".SS_ListLabel"            # "(1)" — flush against the content span
+# NB: matched on the isolated fragment, where the SS_CommentaryContent parent has
+# been sliced away — so this selects the span itself, not a descendant of it.
+SEL_HK_COMMENTARY_HEADING = "span.SS_Heading"   # "[7.01] Enactment history"
 # Login / block detection hints (substring match on URL).
 # A page on one of these hosts/paths means we are NOT authenticated yet.
 LOGIN_URL_HINTS = (

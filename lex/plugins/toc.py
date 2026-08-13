@@ -13,13 +13,16 @@ Design split for testability:
 from __future__ import annotations
 
 import json
+import os
 import re
+from collections import deque
 from pathlib import Path
 
 from bs4 import BeautifulSoup
 
 from .. import config
 from ..core import urls
+from ..core.exceptions import ContentNotFound
 from ..core.models import Section
 from .base import Plugin
 
@@ -42,12 +45,21 @@ def build_sections(nodes: list[dict], title: str, volume: str | None = None,
     ``nodes`` items: ``{"nodeid": str, "label": str, "urn": str|None, "url": str|None}``.
     Structural nodes (no URN) supply hierarchy labels; leaf nodes (with a URN)
     become Sections whose hierarchy is read off matching node-id prefixes.
+
+    A branch that carries its own anchor becomes a Section too. In the HK
+    annotated ordinances an ordinance section is exactly that: the statutory
+    text lives on the branch (anchor ``AOHK.CAP1.S7``) and each annotation
+    beneath it is a leaf (``…S7.COMNTRY_7-01``). Taking leaves only — the
+    Halsbury assumption — silently drops the legislation itself. Such a section
+    is marked ``body_only`` so the parser keeps its statutory text and leaves
+    the annotations to the leaf records instead of duplicating them.
     """
     label_by_id = {n["nodeid"]: (n.get("label") or "").strip()
                    for n in nodes if n.get("nodeid")}
     leaf_nodes = [
         n for n in nodes
-        if n.get("urn") and n.get("nodeid") and not n.get("has_children")
+        if n.get("urn") and n.get("nodeid")
+        and (not n.get("has_children") or n.get("anchor_id"))
     ]
     urn_counts: dict[str, int] = {}
     for n in leaf_nodes:
@@ -73,12 +85,28 @@ def build_sections(nodes: list[dict], title: str, volume: str | None = None,
             ),
             anchor_id=n.get("anchor_id"),
             section_key=section_key,
+            body_only=bool(n.get("has_children")),
         )
     return sorted(seen.values(), key=lambda s: s.decoded_path)
 
 
 _PAGE_MODEL_MARKER = "this.add('page.model'"
 _URN_IN_PATH = re.compile(r"urn:contentItem:[0-9A-Za-z-]+")
+
+
+def _debug_dump(name: str, data) -> None:
+    """Write a raw toctreeresults response to ``.state/toc_debug/`` when
+    ``LEX_TOC_DEBUG=1``. Off by default; the payloads are large."""
+    if os.environ.get("LEX_TOC_DEBUG") != "1":
+        return
+    try:
+        out = config.STATE_DIR / "toc_debug"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / f"{name}.json").write_text(
+            json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+    except OSError:
+        pass
 
 
 def nodes_from_html(html: str) -> list[dict]:
@@ -214,6 +242,12 @@ def nodes_from_toctree(data: dict) -> list[dict]:
     Each node has the *full* ``nodeId`` (= pdtocnodeidentifier), ``nodeTitle``
     ("N. Heading" for leaves, Part/Group labels for branches), and
     ``docFullPath`` (``/shared/document/…/urn:contentItem:…`` for section leaves).
+
+    Two fields drive the fetch strategy and are carried through:
+      * ``level`` — the node's *absolute* depth in the tree.
+      * ``tocDescendantInfo`` — ``[{nodeLevel, count}, …]`` per level beneath it;
+        its deepest ``nodeLevel`` is the only valid ``extractToLevel`` ceiling for
+        that node (asking deeper returns HTTP 500).
     """
     out: list[dict] = []
 
@@ -222,9 +256,14 @@ def nodes_from_toctree(data: dict) -> list[dict]:
         dfp = node.get("docFullPath") or ""
         children = node.get("nodes") or []
         counts = node.get("countsByLevel") or node.get("countsbylevel") or ""
+        info = node.get("tocDescendantInfo") or []
+        levels = [e.get("nodeLevel") for e in info
+                  if isinstance(e, dict) and isinstance(e.get("nodeLevel"), int)]
+        level = node.get("level")
+        # hasChildren is the string "yes"/null here, so bool() would call "no" a branch
+        flag = str(node.get("hasChildren") or "").strip().lower() in ("yes", "true", "1")
         has_children = (
-            bool(children) or bool(node.get("hasChildren"))
-            or _has_descendant_counts(counts)
+            bool(children) or flag or bool(levels) or _has_descendant_counts(counts)
         )
         anchor_id = (
             node.get("anchorIdRef") or node.get("anchoridref")
@@ -241,7 +280,9 @@ def nodes_from_toctree(data: dict) -> list[dict]:
         if nid:
             out.append({"nodeid": nid, "label": node.get("nodeTitle") or "",
                         "urn": urn, "url": url, "anchor_id": anchor_id,
-                        "has_children": has_children})
+                        "has_children": has_children,
+                        "level": level if isinstance(level, int) else len(nid) // 3,
+                        "max_level": max(levels) if levels else None})
         for child in children:
             rec(child)
 
@@ -316,22 +357,112 @@ class TocCrawler(Plugin):
         self.last_titles = titles
         return titles
 
-    def harvest_title(self, toc_fullpath: str, nodeid: str, name: str,
-                      level: int | None = None,
-                      publication: str | None = None) -> list[Section]:
-        """POST toctreeresults for one title node and build its Section list."""
+    def _toctree_nodes(self, toc_fullpath: str, nodeid: str, level: int) -> list[dict]:
+        """One toctreeresults POST -> flat node list (node ids are absolute)."""
         body = {
             "action": "toctreeresults",
             "tocId": urls.tocid_b64(toc_fullpath),
             "nodeId": nodeid,
-            "extractToLevel": level or config.TOC_MAX_LEVEL,
+            "extractToLevel": level,
             "masterFeatureContext": config.PDMFID,
         }
         data = self.session.request_json(
             config.TOCTREE_ENDPOINT, body, referer=urls.build_toc_url(toc_fullpath)
         )
+        _debug_dump(f"{nodeid}-L{level}", data)
+        return nodes_from_toctree(data)
+
+    def fetch_subtree(self, toc_fullpath: str, nodeid: str,
+                      level: int | None = None, *, on_progress=None) -> list[dict]:
+        """Every node under ``nodeid``, fetched in as few requests as possible.
+
+        ``extractToLevel`` is an *absolute* tree level, and it must land exactly
+        on a node's own deepest descendant level. Ask for less and the subtree
+        comes back truncated; ask for more and the API answers HTTP 500 ("not a
+        valid Base-64 string" — misleading, but it means the request, not the
+        data). Each node's ceiling is its deepest ``tocDescendantInfo.nodeLevel``,
+        so every request uses the ceiling of the node it targets rather than the
+        title's — the title's depth is only correct for the title itself.
+
+        The happy path is one request for the whole subtree. When the gateway
+        can't build one that big it answers 504; we then re-ask that node for
+        just its immediate children (``level + 1``) and fetch each child's
+        subtree on its own. Splitting at the shallowest level keeps the request
+        count low — a 15-branch title costs ~17 requests, not one per node.
+
+        Each ``(nodeid, level)`` pair is requested at most once, which bounds the
+        loop; anything still unfetched at the end is reported.
+        """
+        full = level or config.TOC_MAX_LEVEL
+        collected: dict[str, dict] = {}
+        parents: set[str] = set()
+        requested: set[tuple[str, int]] = set()
+        queue: deque[tuple[str, int]] = deque([(nodeid, full)])
+
+        def note(msg: str) -> None:
+            if on_progress:
+                on_progress(msg)
+
+        def ceiling(n: dict, fallback: int) -> int:
+            """The deepest level this node's own subtree reaches."""
+            return n.get("max_level") or fallback
+
+        while queue:
+            if len(requested) >= config.TOC_MAX_SUBTREE_REQUESTS:
+                note(f"[toc] request cap reached with {len(queue)} branch(es) unfetched")
+                break
+            nid, lvl = queue.popleft()
+            if (nid, lvl) in requested:
+                continue
+            if nid != nodeid and nid in parents:
+                continue      # another request already delivered this node's children
+            requested.add((nid, lvl))
+            try:
+                batch = self._toctree_nodes(toc_fullpath, nid, lvl)
+            except ContentNotFound as exc:
+                own = (collected.get(nid) or {}).get("level") or (len(nid) // 3)
+                children_only = own + 1
+                if lvl <= children_only:
+                    note(f"[toc] WARNING: {nid} unfetchable at extractToLevel="
+                         f"{lvl} ({exc})")
+                    if nid == nodeid:
+                        raise
+                    continue
+                note(f"[toc] subtree {nid} too large; re-asking for its children only")
+                queue.append((nid, children_only))
+                continue
+
+            for n in batch:
+                collected.setdefault(n["nodeid"], n)
+            parents = {k[:-3] for k in collected if len(k) > 3}
+            for n in batch:
+                nid_n = n["nodeid"]
+                # An anchored node used to be skipped here, on the assumption
+                # that an anchor means a leaf document. In the HK ordinances it
+                # does not: a section carries an anchor *and* has annotation
+                # children, so skipping it dropped every annotation beneath any
+                # branch the gateway made us split. `has_children` is the only
+                # test that matters; `parents` already covers whatever arrived
+                # nested in an earlier response, so the happy path is unchanged.
+                if nid_n in parents or not n.get("has_children"):
+                    continue
+                queue.append((nid_n, ceiling(n, full)))
+
+        stranded = [k for k, n in collected.items()
+                    if n.get("has_children") and k not in parents]
+        if stranded:
+            note(f"[toc] WARNING: {len(stranded)} branch(es) under {nodeid} were "
+                 f"never fetched, e.g. {stranded[:3]}")
+        return list(collected.values())
+
+    def harvest_title(self, toc_fullpath: str, nodeid: str, name: str,
+                      level: int | None = None,
+                      publication: str | None = None,
+                      on_progress=None) -> list[Section]:
+        """Fetch one title's whole subtree and build its Section list."""
+        nodes = self.fetch_subtree(toc_fullpath, nodeid, level, on_progress=on_progress)
         clean_title, volume = split_title_volume(name)
-        return build_sections(nodes_from_toctree(data), title=clean_title,
+        return build_sections(nodes, title=clean_title,
                               volume=volume, publication=publication or self.publication)
 
     def harvest(self, seed_url: str, title: str | None = None,

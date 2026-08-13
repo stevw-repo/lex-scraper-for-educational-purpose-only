@@ -215,7 +215,12 @@ class ScrapeWorker(threading.Thread):
             try:
                 sections = self._harvest_title(t)
             except Exception as exc:  # noqa: BLE001
-                self._log_line(f"harvest failed for {t['clean']}: {exc}")
+                # a title whose TOC never arrives writes no manifest rows at all,
+                # so say so on its row — otherwise it reads as "not started"
+                with self._lock:
+                    t["status"] = "harvest failed"
+                self._log_line(f"harvest failed for {t['clean']}: "
+                               f"{type(exc).__name__}: {exc}")
                 continue
             # known total the moment we harvest, so the row shows N (not "—") live
             with self._lock:
@@ -239,17 +244,22 @@ class ScrapeWorker(threading.Thread):
         toc = self.kernel["toc"]
         level = extract_to_level(t["countsbylevel"])
         args = (self._state["toc_fullpath"], t["nodeid"], t["name"], level)
+        kw = {"publication": self._state["publication"],
+              "on_progress": self._log_line}
         try:
-            return toc.harvest_title(*args, publication=self._state["publication"])
+            return toc.harvest_title(*args, **kw)
         except SessionExpired:
             self.controls.reauth()
-            return toc.harvest_title(*args, publication=self._state["publication"])
+            return toc.harvest_title(*args, **kw)
 
     def _build(self) -> None:
         runner = self.kernel["runner"]
-        stats = self.kernel["writer"].compile_jsonl(runner.manifest.done_records())
+        writer = self.kernel["writer"]
+        records = runner.manifest.done_records()
+        stats = writer.compile_jsonl(records)
+        md = writer.compile_markdown(records)
         self._log_line(f"built corpus: {stats['records']} records, "
-                       f"{stats['titles']} title(s)")
+                       f"{stats['titles']} title(s), {md['files']} .md file(s)")
 
     # --- event handling + state -------------------------------------------
 

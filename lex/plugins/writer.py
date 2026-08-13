@@ -115,3 +115,80 @@ class Output(Plugin):
                         total += 1
         return {"publications": len({p for p, _ in groups}),
                 "titles": len(groups), "records": total, "corpus": str(corpus_path)}
+
+    # --- Markdown corpus --------------------------------------------------
+
+    def compile_markdown(self, records: list[dict]) -> dict:
+        """Write one Markdown file per title: ``output/<publication>/<title>.md``.
+
+        The book's own structure becomes the heading tree — a heading is emitted
+        only where the hierarchy differs from the previous record, so Part/Group
+        labels appear once and the sections read in order underneath them. Each
+        record's own heading sits one level below its deepest hierarchy label,
+        capped at ``######`` since Markdown has no h7.
+        """
+        self.root.mkdir(parents=True, exist_ok=True)
+        groups: dict[tuple[str, str], list[dict]] = {}
+        for r in records:
+            key = (r.get("publication") or "Unknown", r.get("title") or "Untitled")
+            groups.setdefault(key, []).append(r)
+
+        files = 0
+        total = 0
+        for (publication, title), recs in sorted(groups.items()):
+            recs.sort(key=lambda r: r.get("decoded_path") or [])
+            pub_dir = self.root / slug(publication)
+            pub_dir.mkdir(parents=True, exist_ok=True)
+            path = pub_dir / f"{slug(title)}.md"
+            path.write_text(self._title_markdown(publication, title, recs),
+                            encoding="utf-8")
+            files += 1
+            total += len(recs)
+        return {"publications": len({p for p, _ in groups}),
+                "titles": len(groups), "records": total, "files": files,
+                "dir": str(self.root)}
+
+    def _title_markdown(self, publication: str, title: str, recs: list[dict]) -> str:
+        volume = next((r.get("volume") for r in recs if r.get("volume")), None)
+        out: list[str] = [f"# {title}" + (f" — {volume}" if volume else "")]
+        meta = " · ".join(x for x in (
+            publication,
+            recs[0].get("jurisdiction"),
+            f"{len(recs)} sections",
+            f"retrieved {(recs[0].get('retrieved_at') or '')[:10]}",
+        ) if x)
+        out.append(f"*{meta}*")
+
+        previous: list[str] = []
+        for r in recs:
+            heading, body = self._record_heading(r)
+            # One path per record, hierarchy then own heading, so a section and
+            # its annotations share their prefix: the section heading is emitted
+            # once and the annotations nest under it rather than repeating it.
+            path = [h for h in (r.get("hierarchy") or []) if h] + [heading]
+            for depth, label in enumerate(path):
+                if depth >= len(previous) or previous[depth] != label:
+                    out.append(f"{'#' * min(depth + 2, 6)} {label}")
+            previous = path
+
+            if body:
+                out.append(body)
+            footnotes = r.get("footnotes") or {}
+            if footnotes:
+                out.append("\n".join(f"[^{n}]: {t}" for n, t in footnotes.items()))
+        return "\n\n".join(out).rstrip() + "\n"
+
+    @staticmethod
+    def _record_heading(record: dict) -> tuple[str, str]:
+        """``(heading, body)`` — the body's own ``### [7.01] Enactment history``
+        line is promoted to the heading rather than repeated under it, since it
+        carries the paragraph number legal citation uses."""
+        heading = record.get("heading") or ""
+        number = (record.get("section_number") or "").strip()
+        if number and not heading.startswith(number):
+            heading = f"{number}. {heading}".strip()
+        body = record.get("body_markdown") or ""
+        first, _, rest = body.partition("\n")
+        if first.startswith("### ") and heading.lower() in first.lower():
+            return first[4:].strip(), rest.lstrip("\n")
+        return heading or "(untitled)", body
